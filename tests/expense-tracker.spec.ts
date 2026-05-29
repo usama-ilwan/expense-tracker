@@ -1334,3 +1334,196 @@ test("120: add expense via UI then export shows correct data", async ({ page }) 
   expect(rows[1][3]).toBe("UIAdded");
   expect(rows[1][2]).toBe("33");
 });
+
+test("121: exported file is named expenses.csv", async ({ page }) => {
+  await addExpense(page, "FileNameTest", "1", "Food", "2026-06-01");
+  await page.reload();
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click("button:has-text('Export Data')"),
+  ]);
+  expect(download.suggestedFilename()).toBe("expenses.csv");
+});
+
+test("122: row count equals expenses plus header", async ({ page }) => {
+  for (let i = 0; i < 5; i++) {
+    await addExpense(page, `Row${i}`, `${i + 1}`, "Food", "2026-06-01");
+  }
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length).toBe(6);
+});
+
+test("123: export with 100 expenses completes successfully", async ({ page }) => {
+  test.setTimeout(60000);
+  for (let i = 0; i < 100; i++) {
+    await addExpense(page, `Stress${i}`, `${i + 1}`, "Other", "2026-01-01");
+  }
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length).toBe(101);
+  expect(rows[100][3]).toBe("Stress99");
+  expect(rows[1][2]).toBe("1");
+  expect(rows[100][2]).toBe("100");
+});
+
+test("124: export includes ALL expenses (not filtered subset)", async ({ page }) => {
+  await addExpense(page, "Apple", "10", "Food", "2026-06-01");
+  await addExpense(page, "Bus", "50", "Transport", "2026-06-02");
+  await addExpense(page, "Shirt", "30", "Shopping", "2026-06-03");
+  await page.reload();
+
+  await page.click("text=Food");
+  await expect(page.locator("text=Bus")).not.toBeVisible();
+
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length - 1).toBe(3);
+  const titles = rows.slice(1).map((r) => r[3]);
+  expect(titles).toEqual(expect.arrayContaining(["Apple", "Bus", "Shirt"]));
+});
+
+test("125: all 8 categories appear in export", async ({ page }) => {
+  const cats = ["Food", "Transport", "Shopping", "Entertainment", "Bills", "Health", "Education", "Other"];
+  for (let i = 0; i < cats.length; i++) {
+    await addExpense(page, `Cat${i}`, "10", cats[i], "2026-06-01");
+  }
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  const categories = rows.slice(1).map((r) => r[1]);
+  for (const cat of cats) {
+    expect(categories).toContain(cat);
+  }
+});
+
+test("126: export with ancient date 1900-01-01", async ({ page }) => {
+  await addExpense(page, "Old", "100", "Other", "1900-01-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][0]).toBe("1900-01-01");
+});
+
+test("127: export with far future date 9999-12-31", async ({ page }) => {
+  await addExpense(page, "Future", "100", "Other", "9999-12-31");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][0]).toBe("9999-12-31");
+});
+
+test("128: export with amount near MAX_SAFE_INTEGER", async ({ page }) => {
+  await addExpense(page, "MaxSafe", "9007199254740991", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("9007199254740991");
+});
+
+test("129: export with amount having 9 decimal places", async ({ page }) => {
+  await addExpense(page, "Precise", "12.123456789", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("12.123456789");
+});
+
+test("130: export with negative amount", async ({ page }) => {
+  await addExpense(page, "Negative", "-50", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("-50");
+});
+
+test("131: export with mixed multi-script title", async ({ page }) => {
+  await addExpense(page, "Hello مرحبا 你好 おはよう 😊", "42", "Education", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("Hello مرحبا 你好 おはよう 😊");
+});
+
+test("132: export with title containing only numbers", async ({ page }) => {
+  await addExpense(page, "1234567890", "10", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("1234567890");
+});
+
+test("133: export after add -> delete -> add cycle", async ({ page }) => {
+  await addExpense(page, "Temp", "1", "Food", "2026-06-01");
+  await page.reload();
+  await page.click("text=✕");
+  await addExpense(page, "Final", "99", "Transport", "2026-06-02");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length - 1).toBe(1);
+  expect(rows[1][3]).toBe("Final");
+  expect(rows[1][1]).toBe("Transport");
+});
+
+test("134: rapid export 5 times in a row", async ({ page }) => {
+  await addExpense(page, "Rapid", "10", "Food", "2026-06-01");
+  await page.reload();
+  for (let i = 0; i < 5; i++) {
+    const csv = await exportCsv(page);
+    const rows = parseCsv(csv);
+    expect(rows[1][3]).toBe("Rapid");
+  }
+});
+
+test("135: export with 0.01 amount boundary", async ({ page }) => {
+  await addExpense(page, "Boundary", "0.01", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("0.01");
+});
+
+test("136: export with amount 999999999.99", async ({ page }) => {
+  await addExpense(page, "LargeDecimal", "999999999.99", "Shopping", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("999999999.99");
+});
+
+test("137: export after clearing localStorage then adding fresh data", async ({ page }) => {
+  await page.evaluate(() => localStorage.clear());
+  await addExpense(page, "Fresh", "25", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length - 1).toBe(1);
+  expect(rows[1][3]).toBe("Fresh");
+});
+
+test("138: export with title containing backslash", async ({ page }) => {
+  await addExpense(page, "Path\\to\\file", "5", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("Path\\to\\file");
+});
+
+test("139: export preserves date format as YYYY-MM-DD", async ({ page }) => {
+  await addExpense(page, "DateFormat", "10", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("140: export with title containing angle brackets (non-HTML)", async ({ page }) => {
+  await addExpense(page, "a < b > c", "7", "Education", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("a < b > c");
+});
