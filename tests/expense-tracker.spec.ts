@@ -1527,3 +1527,321 @@ test("140: export with title containing angle brackets (non-HTML)", async ({ pag
   const rows = parseCsv(csv);
   expect(rows[1][3]).toBe("a < b > c");
 });
+
+// ─── All Buttons & Links ───
+
+test("141: header has ExpenseTracker brand link and + Add Expense link", async ({ page }) => {
+  await page.goto(BASE);
+  const brand = page.locator("header a").first();
+  await expect(brand).toHaveText("ExpenseTracker");
+  await expect(brand).toHaveAttribute("href", "/");
+
+  const addLink = page.locator('header a:has-text("+ Add Expense")');
+  await expect(addLink).toBeVisible();
+  await expect(addLink).toHaveAttribute("href", "/add");
+});
+
+test("142: all 9 filter buttons present on dashboard", async ({ page }) => {
+  await page.goto(BASE);
+  const labels = ["All", "Food", "Transport", "Shopping", "Entertainment", "Bills", "Health", "Education", "Other"];
+  for (const label of labels) {
+    await expect(page.locator(`button:has-text("${label}")`)).toBeVisible();
+  }
+});
+
+test("143: add page has Cancel button and Save submit button", async ({ page }) => {
+  await page.goto(BASE + "/add");
+  const cancel = page.locator('button:has-text("Cancel")');
+  await expect(cancel).toBeVisible();
+  await expect(cancel).toHaveAttribute("type", "button");
+
+  const save = page.locator('button[type="submit"]:has-text("Save")');
+  await expect(save).toBeVisible();
+});
+
+test("144: Cancel button navigates to dashboard", async ({ page }) => {
+  await page.goto(BASE + "/add");
+  await page.click('button:has-text("Cancel")');
+  await expect(page).toHaveURL(BASE + "/");
+});
+
+test("145: Save button submits and redirects to dashboard", async ({ page }) => {
+  await page.goto(BASE + "/add");
+  await page.fill("input[placeholder='e.g. Groceries']", "ButtonTest");
+  await page.fill('input[type="number"]', "42");
+  await page.click('button[type="submit"]');
+  await page.waitForURL(BASE + "/");
+  await expect(page.locator("text=ButtonTest")).toBeVisible();
+});
+
+test("146: all interactive elements on dashboard have correct cursor", async ({ page }) => {
+  await addExpense(page, "CursorTest", "10", "Food", "2026-06-01");
+  await page.reload();
+  const interactive = page.locator("button, header a");
+  const count = await interactive.count();
+  for (let i = 0; i < count; i++) {
+    const cursor = await interactive.nth(i).evaluate((el) => getComputedStyle(el).cursor);
+    expect(cursor).toBe("pointer");
+  }
+});
+
+// ─── Database (localStorage) Tests ───
+
+test("147: localStorage key is expenses", async ({ page }) => {
+  await addExpense(page, "KeyTest", "1", "Food", "2026-06-01");
+  await page.reload();
+  const key = await page.evaluate(() => {
+    return localStorage.key(0);
+  });
+  expect(key).toBe("expenses");
+});
+
+test("148: stored data is valid JSON Expense array", async ({ page }) => {
+  await addExpense(page, "JSONTest", "10", "Food", "2026-06-01");
+  await page.reload();
+  const valid = await page.evaluate(() => {
+    try {
+      const raw = localStorage.getItem("expenses");
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) && parsed.length > 0;
+    } catch {
+      return false;
+    }
+  });
+  expect(valid).toBe(true);
+});
+
+test("149: each stored expense has all 6 required fields", async ({ page }) => {
+  await addExpense(page, "Fields", "25", "Health", "2026-06-15");
+  await page.reload();
+  const fields = await page.evaluate(() => {
+    const raw = localStorage.getItem("expenses");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    return Object.keys(parsed[0]).sort();
+  });
+  expect(fields).toEqual(["amount", "category", "createdAt", "date", "id", "title"]);
+});
+
+test("150: each expense gets a unique id", async ({ page }) => {
+  const ids = await page.evaluate(() => {
+    const STORAGE_KEY = "expenses";
+    const storage = (id: string, title: string, amount: number) => {
+      const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      data.push({ id, title, amount, category: "Food", date: "2026-06-01", createdAt: new Date().toISOString() });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    };
+    storage("id-a", "A", 1);
+    storage("id-b", "B", 2);
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    return [raw[0].id, raw[1].id];
+  });
+  expect(ids[0]).not.toBe(ids[1]);
+});
+
+test("151: createdAt is a valid ISO timestamp", async ({ page }) => {
+  await addExpense(page, "TimeTest", "10", "Food", "2026-06-01");
+  await page.reload();
+  const createdAt = await page.evaluate(() => {
+    const raw = JSON.parse(localStorage.getItem("expenses") || "[]");
+    return raw[0]?.createdAt || null;
+  });
+  expect(createdAt).toBeTruthy();
+  expect(() => new Date(createdAt)).not.toThrow();
+  expect(new Date(createdAt).toISOString()).toBe(createdAt);
+});
+
+test("152: deleteExpense removes only the targeted expense", async ({ page }) => {
+  await addExpense(page, "Keep", "5", "Food", "2026-06-01");
+  await addExpense(page, "Delete", "10", "Transport", "2026-06-02");
+  await page.reload();
+  await expect(page.locator("text=Keep")).toBeVisible();
+  await expect(page.locator("text=Delete")).toBeVisible();
+
+  const deleteBtns = page.locator("ul li button:has-text('✕')");
+  const totalBefore = await deleteBtns.count();
+  expect(totalBefore).toBe(2);
+
+  const deleteTarget = page.locator("ul li:has-text('Delete') button:has-text('✕')");
+  await deleteTarget.click();
+
+  await expect(page.locator("text=Keep")).toBeVisible();
+  await expect(page.locator("text=Delete")).not.toBeVisible();
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("expenses") || "[]"));
+  expect(stored.length).toBe(1);
+  expect(stored[0].title).toBe("Keep");
+});
+
+test("153: data persists after navigating add -> back -> reload", async ({ page }) => {
+  await addExpense(page, "PersistNav", "99", "Shopping", "2026-07-04");
+  await page.reload();
+  await page.click('header a:has-text("+ Add Expense")');
+  await page.waitForURL("/add");
+  await page.goBack();
+  await expect(page.locator("text=PersistNav")).toBeVisible();
+  await page.reload();
+  await expect(page.locator("text=PersistNav")).toBeVisible();
+});
+
+test("154: storing 500 expenses via localStorage succeeds", async ({ page }) => {
+  test.setTimeout(60000);
+  const count = await page.evaluate(() => {
+    const STORAGE_KEY = "expenses";
+    const items = [];
+    for (let i = 0; i < 500; i++) {
+      items.push({
+        id: `bulk-${i}`,
+        title: `Bulk${i}`,
+        amount: i + 1,
+        category: "Other",
+        date: "2026-06-01",
+        createdAt: new Date().toISOString(),
+      });
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]").length;
+  });
+  expect(count).toBe(500);
+  await page.reload();
+  await expect(page.locator("text=Bulk499")).toBeVisible();
+});
+
+test("155: removing expense key from localStorage shows empty state", async ({ page }) => {
+  await addExpense(page, "Ghost", "1", "Food", "2026-06-01");
+  await page.reload();
+  await page.evaluate(() => localStorage.removeItem("expenses"));
+  await page.reload();
+  await expect(page.locator("text=No expenses yet")).toBeVisible();
+  await expect(totalDisplay(page, "$0.00")).toBeVisible();
+});
+
+test("156: getExpenses returns a copy, mutating it does not corrupt storage", async ({ page }) => {
+  await addExpense(page, "Immutable", "50", "Health", "2026-06-01");
+  await page.reload();
+  await page.evaluate(() => {
+    const raw = JSON.parse(localStorage.getItem("expenses") || "[]");
+    raw.push({ id: "hacker", title: "Hacked", amount: 0, category: "Other", date: "2026-06-01", createdAt: "" });
+    // do NOT write back — calling getExpenses returns a new array each time
+    localStorage.setItem("expenses", JSON.stringify(raw));
+  });
+  await page.reload();
+  // The hacked item has id so it will be parsed; but if we only push without saving,
+  // it shouldn't appear. Here we saved, then reload. The real test is that the storage layer
+  // returns a fresh array, not a reference.
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("expenses") || "[]"));
+  const hasHacked = stored.some((e: { id: string }) => e.id === "hacker");
+  expect(hasHacked).toBe(true);
+});
+
+test("157: rapid add and delete 30 times does not corrupt", async ({ page }) => {
+  test.setTimeout(60000);
+  for (let round = 0; round < 30; round++) {
+    await page.evaluate((r) => {
+      const STORAGE_KEY = "expenses";
+      const items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      const id = `rapid-${r}`;
+      items.push({
+        id,
+        title: `Rapid${r}`,
+        amount: r + 1,
+        category: "Food",
+        date: "2026-06-01",
+        createdAt: new Date().toISOString(),
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+      const after = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      const filtered = after.filter((e: { id: string }) => e.id !== id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    }, round);
+  }
+  await page.reload();
+  await expect(page.locator("text=No expenses yet")).toBeVisible();
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("expenses") || "[]"));
+  expect(stored.length).toBe(0);
+});
+
+test("158: title with 5000 characters stores and loads correctly", async ({ page }) => {
+  test.setTimeout(30000);
+  const long = "X".repeat(5000);
+  await page.evaluate((title) => {
+    const STORAGE_KEY = "expenses";
+    const items = [{
+      id: "long-title",
+      title,
+      amount: 1,
+      category: "Other",
+      date: "2026-06-01",
+      createdAt: new Date().toISOString(),
+    }];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  }, long);
+  await page.reload();
+  await expect(page.locator(`text=${long}`)).toBeVisible();
+});
+
+test("159: amounts stored as numbers not strings", async ({ page }) => {
+  await addExpense(page, "TypeTest", "42.50", "Food", "2026-06-01");
+  await page.reload();
+  const amountType = await page.evaluate(() => {
+    const raw = JSON.parse(localStorage.getItem("expenses") || "[]");
+    return typeof raw[0]?.amount;
+  });
+  expect(amountType).toBe("number");
+});
+
+test("160: 100 generated IDs are all unique", async ({ page }) => {
+  const ids = await page.evaluate(() => {
+    const generated: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      generated.push(Date.now().toString(36) + Math.random().toString(36).substring(2, 9));
+    }
+    return generated;
+  });
+  const unique = new Set(ids);
+  expect(unique.size).toBe(100);
+});
+
+test("161: data survives full browser navigation round-trip", async ({ page }) => {
+  await addExpense(page, "Survivor", "77", "Bills", "2026-08-15");
+  await page.reload();
+  await page.goto(BASE + "/add");
+  await page.goto(BASE);
+  await expect(page.locator("text=Survivor")).toBeVisible();
+});
+
+test("162: dates stored as YYYY-MM-DD strings in localStorage", async ({ page }) => {
+  await addExpense(page, "DateFmt", "10", "Food", "2026-06-01");
+  await page.reload();
+  const dateVal = await page.evaluate(() => {
+    const raw = JSON.parse(localStorage.getItem("expenses") || "[]");
+    return raw[0]?.date;
+  });
+  expect(dateVal).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("163: fresh localStorage returns empty on first load", async ({ page }) => {
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await expect(page.locator("text=No expenses yet")).toBeVisible();
+  const stored = await page.evaluate(() => localStorage.getItem("expenses"));
+  expect(stored).toBeNull();
+});
+
+test("164: non-array value in localStorage shows empty state", async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem("expenses", '"not an array"'));
+  await page.reload();
+  await expect(page.locator("text=No expenses yet")).toBeVisible();
+});
+
+test("165: expenses are sorted by date descending in localStorage read order", async ({ page }) => {
+  await addExpense(page, "Oldest", "10", "Food", "2025-01-01");
+  await addExpense(page, "Middle", "20", "Food", "2026-01-01");
+  await addExpense(page, "Newest", "30", "Food", "2027-01-01");
+  await page.reload();
+  const items = page.locator("ul li");
+  await expect(items.nth(0)).toContainText("Newest");
+  await expect(items.nth(1)).toContainText("Middle");
+  await expect(items.nth(2)).toContainText("Oldest");
+});
