@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import fs from "fs";
 
 const BASE = "http://localhost:3000";
 
@@ -1092,4 +1093,244 @@ test("100: complete workflow: add → filter → delete → verify empty", async
   await page.click("text=✕");
   await expect(page.locator("text=No expenses yet")).toBeVisible();
   await expect(totalDisplay(page, "$0.00")).toBeVisible();
+});
+
+// ─── Export Data Tests ───
+
+async function exportCsv(page: import("@playwright/test").Page): Promise<string> {
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click("button:has-text('Export Data')"),
+  ]);
+  const path = await download.path();
+  if (!path) throw new Error("Download path is null");
+  return fs.readFileSync(path, "utf-8");
+}
+
+function parseCsv(text: string): string[][] {
+  const lines = text.trim().split("\n");
+  return lines.map((line) => {
+    const result: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"' && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else if (ch === '"') {
+          inQuotes = false;
+        } else {
+          current += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ",") {
+          result.push(current);
+          current = "";
+        } else {
+          current += ch;
+        }
+      }
+    }
+    result.push(current);
+    return result;
+  });
+}
+
+function addExpense(page: import("@playwright/test").Page, title: string, amount: string, category: string, date?: string) {
+  return page.evaluate(
+    ({ title, amount, category, date }) => {
+      const expenses = JSON.parse(localStorage.getItem("expenses") || "[]");
+      expenses.push({
+        id: Date.now().toString(36) + Math.random().toString(36).substring(2, 9),
+        title,
+        amount: parseFloat(amount),
+        category,
+        date: date || new Date().toISOString().split("T")[0],
+        createdAt: new Date().toISOString(),
+      });
+      localStorage.setItem("expenses", JSON.stringify(expenses));
+    },
+    { title, amount, category, date }
+  );
+}
+
+test("101: Export Data button is visible on dashboard", async ({ page }) => {
+  await page.goto(BASE);
+  await expect(page.locator("button:has-text('Export Data')")).toBeVisible();
+});
+
+test("102: Export button has correct label", async ({ page }) => {
+  await page.goto(BASE);
+  const btn = page.locator("button:has-text('Export Data')");
+  await expect(btn).toHaveText("Export Data");
+});
+
+test("103: export produces CSV with correct headers", async ({ page }) => {
+  await addExpense(page, "Test", "10", "Food");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[0]).toEqual(["Date", "Category", "Amount", "Description"]);
+});
+
+test("104: export contains added expense data", async ({ page }) => {
+  await addExpense(page, "Groceries", "45.50", "Food", "2026-05-15");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length).toBe(2);
+  expect(rows[1][0]).toBe("2026-05-15");
+  expect(rows[1][1]).toBe("Food");
+  expect(rows[1][2]).toBe("45.5");
+  expect(rows[1][3]).toBe("Groceries");
+});
+
+test("105: export with multiple expenses includes all", async ({ page }) => {
+  await addExpense(page, "Rent", "1200", "Bills", "2026-05-01");
+  await addExpense(page, "Gas", "60", "Transport", "2026-05-10");
+  await addExpense(page, "Pizza", "15", "Food", "2026-05-20");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length - 1).toBe(3);
+  const titles = rows.slice(1).map((r) => r[3]);
+  expect(titles).toContain("Rent");
+  expect(titles).toContain("Gas");
+  expect(titles).toContain("Pizza");
+});
+
+test("106: export with no expenses produces only headers", async ({ page }) => {
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows.length).toBe(1);
+  expect(rows[0]).toEqual(["Date", "Category", "Amount", "Description"]);
+});
+
+test("107: export handles title with commas", async ({ page }) => {
+  await addExpense(page, "Food, Groceries & More", "25", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  expect(csv).toContain('"Food, Groceries & More"');
+});
+
+test("108: export handles title with double quotes", async ({ page }) => {
+  await addExpense(page, 'He said "hello"', "5", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe('He said "hello"');
+});
+
+test("109: export handles title with newline", async ({ page }) => {
+  await addExpense(page, "Line1\nLine2", "8", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toContain("Line1");
+});
+
+test("110: export handles title with emoji", async ({ page }) => {
+  await addExpense(page, "😀🎉🔥❤️", "10", "Entertainment", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("😀🎉🔥❤️");
+});
+
+test("111: export handles title with HTML injection", async ({ page }) => {
+  await addExpense(page, "<script>alert('xss')</script>", "1", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("<script>alert('xss')</script>");
+});
+
+test("112: export handles RTL title", async ({ page }) => {
+  await addExpense(page, "مرحبا بالعالم", "50", "Education", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("مرحبا بالعالم");
+});
+
+test("113: export handles very long title (1000 chars)", async ({ page }) => {
+  const long = "A".repeat(1000);
+  await addExpense(page, long, "1", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3].length).toBe(1000);
+});
+
+test("114: export preserves decimal amounts", async ({ page }) => {
+  await addExpense(page, "Coffee", "4.99", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("4.99");
+});
+
+test("115: export handles integer amounts", async ({ page }) => {
+  await addExpense(page, "Snack", "5", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("5");
+});
+
+test("116: export handles large amount (trillion)", async ({ page }) => {
+  await addExpense(page, "Country", "1000000000000", "Shopping", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("1000000000000");
+});
+
+test("117: export handles tiny amount 0.01", async ({ page }) => {
+  await addExpense(page, "Penny", "0.01", "Food", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][2]).toBe("0.01");
+});
+
+test("118: export preserves all columns correctly", async ({ page }) => {
+  await addExpense(page, "TestItem", "99.99", "Health", "2026-07-15");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1].length).toBe(4);
+  expect(rows[1][0]).toBe("2026-07-15");
+  expect(rows[1][1]).toBe("Health");
+  expect(rows[1][2]).toBe("99.99");
+  expect(rows[1][3]).toBe("TestItem");
+});
+
+test("119: export with SQL injection title", async ({ page }) => {
+  await addExpense(page, "'); DROP TABLE users; --", "1", "Other", "2026-06-01");
+  await page.reload();
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("'); DROP TABLE users; --");
+});
+
+test("120: add expense via UI then export shows correct data", async ({ page }) => {
+  await page.goto(BASE);
+  await page.click("text=+ Add Expense");
+  await page.fill("input[placeholder='e.g. Groceries']", "UIAdded");
+  await page.fill('input[type="number"]', "33");
+  await page.selectOption("select", "Food");
+  await page.click("text=Save");
+  await page.waitForURL(BASE + "/");
+
+  const csv = await exportCsv(page);
+  const rows = parseCsv(csv);
+  expect(rows[1][3]).toBe("UIAdded");
+  expect(rows[1][2]).toBe("33");
 });

@@ -9,8 +9,8 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: "npm run dev",
+    command: "npm run dev -- --port 3000",
     url: "http://localhost:3000",
-    reuseExistingServer: true,
+    reuseExistingServer: false,
   },
 });

@@ -41,7 +41,7 @@ export function exportToCsv(): void {
   const expenses = getExpenses();
   const header = "Date,Category,Amount,Description";
   const rows = expenses.map(
-    (e) => `${e.date},${e.category},${e.amount},"${e.title}"`
+    (e) => `${e.date},${e.category},${e.amount},"${e.title.replace(/"/g, '""')}"`
   );
   const csv = [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
